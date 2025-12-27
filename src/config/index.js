@@ -37,8 +37,8 @@ export const config = {
   // Red por defecto
   defaultNetwork: 'avalanche',
 
-  // Precio por cartón en USD
-  cardPrice: 0.001,
+  // Precio por cartón en USDC (Avalanche Mainnet)
+  cardPrice: 5,
 
   // Límites - Solo cantidades Fibonacci permitidas
   maxCardsPerPurchase: 34,
