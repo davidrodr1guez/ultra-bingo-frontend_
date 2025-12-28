@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { io } from 'socket.io-client';
 import { useAccount, useConnect, useDisconnect } from 'wagmi';
 import { injected } from 'wagmi/connectors';
 import { NumberBall, BingoCard } from '../components/bingo';
+import { useSocket } from '../context/SocketContext';
 import { config } from '../config';
 import './Admin.css';
 
@@ -16,15 +16,21 @@ function Admin() {
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
 
+  // Use shared socket context
+  const {
+    isConnected: socketConnected,
+    gameState,
+    startGame: contextStartGame,
+    pauseGame: contextPauseGame,
+    resumeGame: contextResumeGame,
+    endGame: contextEndGame,
+    callNumber: contextCallNumber,
+    verifyWinner: contextVerifyWinner,
+  } = useSocket();
+
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [socket, setSocket] = useState(null);
-  const [gameState, setGameState] = useState({
-    status: 'waiting',
-    calledNumbers: [],
-    currentNumber: null,
-  });
   const [availableNumbers, setAvailableNumbers] = useState(ALL_NUMBERS);
 
   // Card Search State
@@ -50,43 +56,12 @@ function Admin() {
     }
   }, []);
 
-  // Connect to socket when authenticated
+  // Update available numbers when game state changes
   useEffect(() => {
-    if (!isAuthenticated) return;
-
-    const adminToken = localStorage.getItem('admin-token');
-    const newSocket = io(config.wsUrl, {
-      auth: { token: adminToken, isAdmin: true },
-    });
-
-    newSocket.on('connect', () => {
-      console.log('Admin socket connected');
-    });
-
-    newSocket.on('game-state', (state) => {
-      setGameState(state);
-      updateAvailableNumbers(state.calledNumbers);
-    });
-
-    newSocket.on('number-called', (data) => {
-      setGameState((prev) => ({
-        ...prev,
-        currentNumber: data.number,
-        calledNumbers: [...prev.calledNumbers, data.number],
-      }));
-      setAvailableNumbers((prev) => prev.filter((n) => n !== data.number));
-    });
-
-    setSocket(newSocket);
-
-    // SECURITY: Cleanup all listeners to prevent memory leaks
-    return () => {
-      newSocket.off('connect');
-      newSocket.off('game-state');
-      newSocket.off('number-called');
-      newSocket.close();
-    };
-  }, [isAuthenticated]);
+    if (gameState?.calledNumbers) {
+      setAvailableNumbers(ALL_NUMBERS.filter((n) => !gameState.calledNumbers.includes(n)));
+    }
+  }, [gameState?.calledNumbers]);
 
   const validateToken = async (token) => {
     try {
@@ -148,59 +123,50 @@ function Admin() {
   const handleLogout = () => {
     localStorage.removeItem('admin-token');
     setIsAuthenticated(false);
-    setSocket(null);
     navigate('/');
   };
 
-  const updateAvailableNumbers = (called) => {
-    setAvailableNumbers(ALL_NUMBERS.filter((n) => !called.includes(n)));
-  };
-
   // Game controls with loading feedback
-  const startGame = useCallback(() => {
-    if (socket && !controlsLoading.start) {
+  const startGame = useCallback(async () => {
+    if (!controlsLoading.start) {
       setControlsLoading((prev) => ({ ...prev, start: true }));
-      socket.emit('admin:start-game');
-      setGameState((prev) => ({ ...prev, status: 'playing', calledNumbers: [], currentNumber: null }));
+      await contextStartGame();
       setAvailableNumbers(ALL_NUMBERS);
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, start: false })), 500);
     }
-  }, [socket, controlsLoading.start]);
+  }, [contextStartGame, controlsLoading.start]);
 
-  const pauseGame = useCallback(() => {
-    if (socket && !controlsLoading.pause) {
+  const pauseGame = useCallback(async () => {
+    if (!controlsLoading.pause) {
       setControlsLoading((prev) => ({ ...prev, pause: true }));
-      socket.emit('admin:pause-game');
-      setGameState((prev) => ({ ...prev, status: 'paused' }));
+      await contextPauseGame();
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, pause: false })), 500);
     }
-  }, [socket, controlsLoading.pause]);
+  }, [contextPauseGame, controlsLoading.pause]);
 
-  const resumeGame = useCallback(() => {
-    if (socket && !controlsLoading.resume) {
+  const resumeGame = useCallback(async () => {
+    if (!controlsLoading.resume) {
       setControlsLoading((prev) => ({ ...prev, resume: true }));
-      socket.emit('admin:resume-game');
-      setGameState((prev) => ({ ...prev, status: 'playing' }));
+      await contextResumeGame();
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, resume: false })), 500);
     }
-  }, [socket, controlsLoading.resume]);
+  }, [contextResumeGame, controlsLoading.resume]);
 
-  const endGame = useCallback(() => {
-    if (socket && !controlsLoading.end && window.confirm('¿Estás seguro de terminar el juego?')) {
+  const endGame = useCallback(async () => {
+    if (!controlsLoading.end && window.confirm('¿Estás seguro de terminar el juego?')) {
       setControlsLoading((prev) => ({ ...prev, end: true }));
-      socket.emit('admin:end-game');
-      setGameState((prev) => ({ ...prev, status: 'ended' }));
+      await contextEndGame();
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, end: false })), 500);
     }
-  }, [socket, controlsLoading.end]);
+  }, [contextEndGame, controlsLoading.end]);
 
-  const callNumber = useCallback((number) => {
-    if (socket && gameState.status === 'playing' && !controlsLoading.callNumber) {
+  const callNumber = useCallback(async (number) => {
+    if (gameState.status === 'playing' && !controlsLoading.callNumber) {
       setControlsLoading((prev) => ({ ...prev, callNumber: true }));
-      socket.emit('admin:call-number', { number });
+      await contextCallNumber(number);
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, callNumber: false })), 300);
     }
-  }, [socket, gameState.status, controlsLoading.callNumber]);
+  }, [contextCallNumber, gameState.status, controlsLoading.callNumber]);
 
   const callRandomNumber = useCallback(() => {
     if (availableNumbers.length > 0 && gameState.status === 'playing' && !controlsLoading.callNumber) {
@@ -260,11 +226,11 @@ function Admin() {
   }, []);
 
   // Verify winner from selected card
-  const handleVerifySelectedCard = useCallback(() => {
-    if (socket && selectedCard) {
-      socket.emit('admin:verify-winner', { cardId: selectedCard.card.id });
+  const handleVerifySelectedCard = useCallback(async () => {
+    if (selectedCard) {
+      await contextVerifyWinner(selectedCard.card.id, selectedCard.ownerOdId);
     }
-  }, [socket, selectedCard]);
+  }, [contextVerifyWinner, selectedCard]);
 
   // Login form - SECURITY: Requires wallet + password
   if (!isAuthenticated) {
@@ -316,15 +282,20 @@ function Admin() {
     );
   }
 
-  const { status, calledNumbers, currentNumber } = gameState;
+  const { status, calledNumbers = [], currentNumber } = gameState;
 
   return (
     <div className="container admin">
       <header className="admin-header">
         <h1>Panel de Administrador</h1>
-        <button onClick={handleLogout} className="btn-logout">
-          Cerrar Sesión
-        </button>
+        <div className="header-status">
+          <span className={`connection-status ${socketConnected ? 'connected' : 'disconnected'}`}>
+            {socketConnected ? 'Conectado' : 'Desconectado'}
+          </span>
+          <button onClick={handleLogout} className="btn-logout">
+            Cerrar Sesión
+          </button>
+        </div>
       </header>
 
       {/* Game Status */}
@@ -535,7 +506,7 @@ function Admin() {
                 {/* Winner Check Result */}
                 {selectedCard.isWinner && (
                   <div className="winner-badge">
-                    ¡BINGO! - {selectedCard.winPattern}
+                    BINGO! - {selectedCard.winPattern}
                   </div>
                 )}
 
