@@ -356,14 +356,36 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
   const address = client.account.address;
   const chain = getChain();
 
+  console.log(`[x402] Signing payment for chain: ${chain.name} (${chain.id})`);
+
   // Verificar que la wallet esté en la red correcta antes de firmar
-  const currentChainId = await window.ethereum.request({
+  let currentChainId = await window.ethereum.request({
     method: 'eth_chainId',
   });
-  const currentChainIdNum = parseInt(currentChainId, 16);
+  let currentChainIdNum = parseInt(currentChainId, 16);
+
+  console.log(`[x402] Current wallet chain: ${currentChainIdNum}, target: ${chain.id}`);
 
   if (currentChainIdNum !== chain.id) {
+    console.log(`[x402] Switching network to ${chain.name}...`);
     await switchToCorrectNetwork();
+
+    // Esperar un momento para que la wallet complete el cambio
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Verificar que el cambio fue exitoso
+    currentChainId = await window.ethereum.request({
+      method: 'eth_chainId',
+    });
+    currentChainIdNum = parseInt(currentChainId, 16);
+
+    if (currentChainIdNum !== chain.id) {
+      throw new Error(
+        `Failed to switch to ${chain.name}. Please switch manually and try again.`
+      );
+    }
+
+    console.log(`[x402] Successfully switched to ${chain.name}`);
 
     // Reinicializar walletClient con la nueva red
     walletClient = createWalletClient({
@@ -396,9 +418,24 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
   };
   const usdcAddress = usdcAddresses[chain.id] || usdcAddresses[43114];
 
+  // Nombres de dominio EIP-712 por chain (según uvd-x402-sdk)
+  // Celo, HyperEVM, Unichain, Monad usan "USDC" en vez de "USD Coin"
+  const domainNames = {
+    43114: 'USD Coin', // Avalanche
+    8453: 'USD Coin', // Base
+    137: 'USD Coin', // Polygon
+    1: 'USD Coin', // Ethereum
+    42161: 'USD Coin', // Arbitrum
+    10: 'USD Coin', // Optimism
+    42220: 'USDC', // Celo
+    143: 'USDC', // Monad
+    999: 'USDC', // HyperEVM
+    130: 'USDC', // Unichain
+  };
+
   // EIP-712 Domain para USDC
   const domain = {
-    name: paymentInfo.extra?.name || 'USD Coin',
+    name: paymentInfo.extra?.name || domainNames[chain.id] || 'USD Coin',
     version: paymentInfo.extra?.version || '2',
     chainId: chain.id,
     verifyingContract: usdcAddress,
