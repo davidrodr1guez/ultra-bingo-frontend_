@@ -265,9 +265,10 @@ export async function getUSDCBalance() {
 }
 
 /**
- * Cambia a la red correcta para x402 (Base Sepolia para testnet)
+ * Cambia a la red correcta para x402
+ * @param {number} maxRetries - Número máximo de intentos
  */
-export async function switchToCorrectNetwork() {
+export async function switchToCorrectNetwork(maxRetries = 3) {
   if (!hasWalletProvider()) {
     throw new Error('No wallet provider found');
   }
@@ -275,35 +276,65 @@ export async function switchToCorrectNetwork() {
   const targetChain = getChain();
   const targetChainIdHex = `0x${targetChain.id.toString(16)}`;
 
-  try {
-    await window.ethereum.request({
-      method: 'wallet_switchEthereumChain',
-      params: [{ chainId: targetChainIdHex }],
-    });
-    return true;
-  } catch (switchError) {
-    // Si la chain no está añadida, intentar añadirla
-    if (switchError?.code === 4902) {
-      try {
-        await window.ethereum.request({
-          method: 'wallet_addEthereumChain',
-          params: [
-            {
-              chainId: targetChainIdHex,
-              chainName: targetChain.name,
-              nativeCurrency: targetChain.nativeCurrency,
-              rpcUrls: [targetChain.rpcUrls.default.http[0]],
-              blockExplorerUrls: [targetChain.blockExplorers?.default.url],
-            },
-          ],
-        });
+  console.log(`[x402] Requesting network switch to ${targetChain.name} (${targetChain.id})`);
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: targetChainIdHex }],
+      });
+
+      // Esperar un momento para que la wallet procese el cambio
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      // Verificar que el cambio fue exitoso
+      const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+      const currentChainIdNum = parseInt(currentChainId, 16);
+
+      if (currentChainIdNum === targetChain.id) {
+        console.log(`[x402] Successfully switched to ${targetChain.name}`);
         return true;
-      } catch {
-        throw new Error(`No se pudo añadir la red ${targetChain.name}`);
       }
+
+      console.warn(`[x402] Network switch attempt ${attempt} - still on chain ${currentChainIdNum}`);
+    } catch (switchError) {
+      console.error(`[x402] Network switch error:`, switchError);
+
+      // Si la chain no está añadida, intentar añadirla
+      if (switchError?.code === 4902) {
+        try {
+          console.log(`[x402] Adding ${targetChain.name} to wallet...`);
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [
+              {
+                chainId: targetChainIdHex,
+                chainName: targetChain.name,
+                nativeCurrency: targetChain.nativeCurrency,
+                rpcUrls: [targetChain.rpcUrls.default.http[0]],
+                blockExplorerUrls: [targetChain.blockExplorers?.default.url],
+              },
+            ],
+          });
+          // Después de añadir, intentar cambiar de nuevo
+          continue;
+        } catch (addError) {
+          console.error(`[x402] Failed to add network:`, addError);
+          throw new Error(`No se pudo añadir la red ${targetChain.name}. Por favor añádela manualmente.`);
+        }
+      }
+
+      // Si el usuario rechazó, lanzar error
+      if (switchError?.code === 4001) {
+        throw new Error(`Por favor cambia a ${targetChain.name} en tu wallet para continuar.`);
+      }
+
+      throw switchError;
     }
-    throw switchError;
   }
+
+  throw new Error(`No se pudo cambiar a ${targetChain.name}. Por favor cambia manualmente en tu wallet.`);
 }
 
 /**
@@ -347,6 +378,10 @@ function generateNonce() {
  * Firma una autorización de pago usando EIP-3009 (TransferWithAuthorization)
  */
 export async function signPaymentAuthorization(paymentInfo, amount) {
+  console.log('[x402] ====== STARTING PAYMENT SIGNATURE ======');
+  console.log('[x402] Payment info:', JSON.stringify(paymentInfo, null, 2));
+  console.log('[x402] Amount:', amount.toString());
+
   const client = await ensureWalletClient();
 
   if (!client.account) {
@@ -356,7 +391,8 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
   const address = client.account.address;
   const chain = getChain();
 
-  console.log(`[x402] Signing payment for chain: ${chain.name} (${chain.id})`);
+  console.log(`[x402] Target chain: ${chain.name} (chainId: ${chain.id})`);
+  console.log(`[x402] Wallet address: ${address}`);
 
   // Verificar que la wallet esté en la red correcta antes de firmar
   let currentChainId = await window.ethereum.request({
@@ -364,14 +400,13 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
   });
   let currentChainIdNum = parseInt(currentChainId, 16);
 
-  console.log(`[x402] Current wallet chain: ${currentChainIdNum}, target: ${chain.id}`);
+  console.log(`[x402] Current wallet chainId: ${currentChainIdNum}`);
 
   if (currentChainIdNum !== chain.id) {
-    console.log(`[x402] Switching network to ${chain.name}...`);
-    await switchToCorrectNetwork();
+    console.log(`[x402] NEED TO SWITCH: from ${currentChainIdNum} to ${chain.id} (${chain.name})`);
 
-    // Esperar un momento para que la wallet complete el cambio
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Usar la función mejorada de cambio de red
+    await switchToCorrectNetwork();
 
     // Verificar que el cambio fue exitoso
     currentChainId = await window.ethereum.request({
@@ -379,13 +414,13 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
     });
     currentChainIdNum = parseInt(currentChainId, 16);
 
+    console.log(`[x402] After switch, wallet chainId: ${currentChainIdNum}`);
+
     if (currentChainIdNum !== chain.id) {
       throw new Error(
-        `Failed to switch to ${chain.name}. Please switch manually and try again.`
+        `No se pudo cambiar a ${chain.name}. Cambia manualmente en tu wallet e intenta de nuevo.`
       );
     }
-
-    console.log(`[x402] Successfully switched to ${chain.name}`);
 
     // Reinicializar walletClient con la nueva red
     walletClient = createWalletClient({
