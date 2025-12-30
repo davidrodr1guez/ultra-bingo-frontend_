@@ -395,10 +395,10 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
     });
   }
 
-  // Tiempos de validez
+  // Tiempos de validez (siguiendo uvd-x402-sdk)
   const now = Math.floor(Date.now() / 1000);
-  const validAfter = BigInt(now - 60); // Válido desde hace 1 minuto
-  const validBefore = BigInt(now + (paymentInfo.maxTimeoutSeconds || 300) + 300); // Válido por el timeout + 5 minutos extra
+  const validAfter = BigInt(0); // Válido inmediatamente (uvd-x402-sdk usa 0)
+  const validBefore = BigInt(now + 300); // Válido por 5 minutos
 
   // Generar nonce aleatorio
   const authorizationNonce = generateNonce();
@@ -465,6 +465,10 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
     validBefore: validBefore,
     nonce: authorizationNonce,
   };
+
+  // Debug logging
+  console.log('[x402] EIP-712 Domain:', JSON.stringify(domain, (k, v) => typeof v === 'bigint' ? v.toString() : v));
+  console.log('[x402] EIP-712 Message:', JSON.stringify(message, (k, v) => typeof v === 'bigint' ? v.toString() : v));
 
   // Firmar con EIP-712
   const signingClient = walletClient || client;
