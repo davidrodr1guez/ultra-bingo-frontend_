@@ -554,24 +554,34 @@ export function encodePaymentHeader(payload) {
  * 4. Reenvía request con header X-Payment
  */
 export async function createPaymentFetch() {
+  console.log('[x402] Creating payment fetch wrapper...');
+
   // Asegurar que walletClient esté inicializado
   await ensureWalletClient();
 
   // Retornar un fetch wrapper que maneja 402 automáticamente
   return async (input, init) => {
+    console.log('[x402] Making initial request to:', input);
+
     // Primera petición sin header de pago
     const firstResponse = await fetch(input, init);
+
+    console.log('[x402] Initial response status:', firstResponse.status);
 
     // Si no es 402, retornar la respuesta directamente
     if (firstResponse.status !== 402) {
       return firstResponse;
     }
 
+    console.log('[x402] Got 402 - Reading payment requirements...');
+
     // Leer la información de pago del body JSON
     let x402Data;
     try {
       x402Data = await firstResponse.json();
+      console.log('[x402] Payment requirements:', JSON.stringify(x402Data, null, 2));
     } catch (error) {
+      console.error('[x402] Failed to read payment info:', error);
       throw new Error('No se pudo leer la información de pago del servidor');
     }
 
@@ -579,17 +589,27 @@ export async function createPaymentFetch() {
     const paymentInfo = x402Data.paymentInfo || x402Data.accepts?.[0];
 
     if (!paymentInfo) {
+      console.error('[x402] No paymentInfo in response:', x402Data);
       throw new Error('El servidor no proporcionó información de pago válida');
     }
+
+    console.log('[x402] Payment info extracted, amount:', paymentInfo.amount || paymentInfo.maxAmountRequired);
 
     // Convertir el monto (ya viene en unidades atómicas)
     const amount = BigInt(paymentInfo.amount || paymentInfo.maxAmountRequired);
 
+    console.log('[x402] Calling signPaymentAuthorization...');
+
     // Firmar la autorización de pago - esto abre la wallet para que el usuario confirme
     const paymentPayload = await signPaymentAuthorization(paymentInfo, amount);
 
+    console.log('[x402] Payment signed successfully');
+    console.log('[x402] Payment payload network:', paymentPayload.network);
+
     // Codificar el payload para el header X-Payment
     const paymentHeader = encodePaymentHeader(paymentPayload);
+
+    console.log('[x402] Making second request with X-PAYMENT header...');
 
     // Segunda petición con header de pago x402 v1
     const newHeaders = new Headers(init?.headers);
@@ -599,6 +619,8 @@ export async function createPaymentFetch() {
       ...init,
       headers: newHeaders,
     });
+
+    console.log('[x402] Second response status:', secondResponse.status);
 
     return secondResponse;
   };
