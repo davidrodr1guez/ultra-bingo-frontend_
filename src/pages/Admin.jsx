@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import { useAccount, useConnect, useDisconnect } from 'wagmi';
 import { injected } from 'wagmi/connectors';
 import { NumberBall, BingoCard } from '../components/bingo';
-import { useSocket } from '../context/SocketContext';
 import { config } from '../config';
 import './Admin.css';
 
@@ -16,21 +16,15 @@ function Admin() {
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
 
-  // Use shared socket context
-  const {
-    isConnected: socketConnected,
-    gameState,
-    startGame: contextStartGame,
-    pauseGame: contextPauseGame,
-    resumeGame: contextResumeGame,
-    endGame: contextEndGame,
-    callNumber: contextCallNumber,
-    verifyWinner: contextVerifyWinner,
-  } = useSocket();
-
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [socket, setSocket] = useState(null);
+  const [gameState, setGameState] = useState({
+    status: 'waiting',
+    calledNumbers: [],
+    currentNumber: null,
+  });
   const [availableNumbers, setAvailableNumbers] = useState(ALL_NUMBERS);
 
   // Card Search State
@@ -46,6 +40,9 @@ function Admin() {
     resume: false,
     end: false,
     callNumber: false,
+    resetGame: false,
+    resetCards: false,
+    fullReset: false,
   });
 
   // Check if admin session exists
@@ -56,12 +53,43 @@ function Admin() {
     }
   }, []);
 
-  // Update available numbers when game state changes
+  // Connect to socket when authenticated
   useEffect(() => {
-    if (gameState?.calledNumbers) {
-      setAvailableNumbers(ALL_NUMBERS.filter((n) => !gameState.calledNumbers.includes(n)));
-    }
-  }, [gameState?.calledNumbers]);
+    if (!isAuthenticated) return;
+
+    const adminToken = localStorage.getItem('admin-token');
+    const newSocket = io(config.wsUrl, {
+      auth: { token: adminToken, isAdmin: true },
+    });
+
+    newSocket.on('connect', () => {
+      console.log('Admin socket connected');
+    });
+
+    newSocket.on('game-state', (state) => {
+      setGameState(state);
+      updateAvailableNumbers(state.calledNumbers);
+    });
+
+    newSocket.on('number-called', (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        currentNumber: data.number,
+        calledNumbers: [...prev.calledNumbers, data.number],
+      }));
+      setAvailableNumbers((prev) => prev.filter((n) => n !== data.number));
+    });
+
+    setSocket(newSocket);
+
+    // SECURITY: Cleanup all listeners to prevent memory leaks
+    return () => {
+      newSocket.off('connect');
+      newSocket.off('game-state');
+      newSocket.off('number-called');
+      newSocket.close();
+    };
+  }, [isAuthenticated]);
 
   const validateToken = async (token) => {
     try {
@@ -123,50 +151,59 @@ function Admin() {
   const handleLogout = () => {
     localStorage.removeItem('admin-token');
     setIsAuthenticated(false);
+    setSocket(null);
     navigate('/');
   };
 
+  const updateAvailableNumbers = (called) => {
+    setAvailableNumbers(ALL_NUMBERS.filter((n) => !called.includes(n)));
+  };
+
   // Game controls with loading feedback
-  const startGame = useCallback(async () => {
-    if (!controlsLoading.start) {
+  const startGame = useCallback(() => {
+    if (socket && !controlsLoading.start) {
       setControlsLoading((prev) => ({ ...prev, start: true }));
-      await contextStartGame();
+      socket.emit('admin:start-game');
+      setGameState((prev) => ({ ...prev, status: 'playing', calledNumbers: [], currentNumber: null }));
       setAvailableNumbers(ALL_NUMBERS);
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, start: false })), 500);
     }
-  }, [contextStartGame, controlsLoading.start]);
+  }, [socket, controlsLoading.start]);
 
-  const pauseGame = useCallback(async () => {
-    if (!controlsLoading.pause) {
+  const pauseGame = useCallback(() => {
+    if (socket && !controlsLoading.pause) {
       setControlsLoading((prev) => ({ ...prev, pause: true }));
-      await contextPauseGame();
+      socket.emit('admin:pause-game');
+      setGameState((prev) => ({ ...prev, status: 'paused' }));
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, pause: false })), 500);
     }
-  }, [contextPauseGame, controlsLoading.pause]);
+  }, [socket, controlsLoading.pause]);
 
-  const resumeGame = useCallback(async () => {
-    if (!controlsLoading.resume) {
+  const resumeGame = useCallback(() => {
+    if (socket && !controlsLoading.resume) {
       setControlsLoading((prev) => ({ ...prev, resume: true }));
-      await contextResumeGame();
+      socket.emit('admin:resume-game');
+      setGameState((prev) => ({ ...prev, status: 'playing' }));
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, resume: false })), 500);
     }
-  }, [contextResumeGame, controlsLoading.resume]);
+  }, [socket, controlsLoading.resume]);
 
-  const endGame = useCallback(async () => {
-    if (!controlsLoading.end && window.confirm('¿Estás seguro de terminar el juego?')) {
+  const endGame = useCallback(() => {
+    if (socket && !controlsLoading.end && window.confirm('¿Estás seguro de terminar el juego?')) {
       setControlsLoading((prev) => ({ ...prev, end: true }));
-      await contextEndGame();
+      socket.emit('admin:end-game');
+      setGameState((prev) => ({ ...prev, status: 'ended' }));
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, end: false })), 500);
     }
-  }, [contextEndGame, controlsLoading.end]);
+  }, [socket, controlsLoading.end]);
 
-  const callNumber = useCallback(async (number) => {
-    if (gameState.status === 'playing' && !controlsLoading.callNumber) {
+  const callNumber = useCallback((number) => {
+    if (socket && gameState.status === 'playing' && !controlsLoading.callNumber) {
       setControlsLoading((prev) => ({ ...prev, callNumber: true }));
-      await contextCallNumber(number);
+      socket.emit('admin:call-number', { number });
       setTimeout(() => setControlsLoading((prev) => ({ ...prev, callNumber: false })), 300);
     }
-  }, [contextCallNumber, gameState.status, controlsLoading.callNumber]);
+  }, [socket, gameState.status, controlsLoading.callNumber]);
 
   const callRandomNumber = useCallback(() => {
     if (availableNumbers.length > 0 && gameState.status === 'playing' && !controlsLoading.callNumber) {
@@ -226,11 +263,97 @@ function Admin() {
   }, []);
 
   // Verify winner from selected card
-  const handleVerifySelectedCard = useCallback(async () => {
-    if (selectedCard) {
-      await contextVerifyWinner(selectedCard.card.id, selectedCard.ownerOdId);
+  const handleVerifySelectedCard = useCallback(() => {
+    if (socket && selectedCard) {
+      socket.emit('admin:verify-winner', { cardId: selectedCard.card.id });
     }
-  }, [contextVerifyWinner, selectedCard]);
+  }, [socket, selectedCard]);
+
+  // Reset game state only
+  const handleResetGame = useCallback(async () => {
+    if (!window.confirm('¿Estás seguro de reiniciar el juego? Se limpiarán los números cantados.')) return;
+
+    setControlsLoading((prev) => ({ ...prev, resetGame: true }));
+    try {
+      const adminToken = localStorage.getItem('admin-token');
+      const response = await fetch(`${config.apiUrl}/api/admin/game/reset`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) throw new Error('Error al reiniciar juego');
+
+      const data = await response.json();
+      setGameState(data.state);
+      setAvailableNumbers(ALL_NUMBERS);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setControlsLoading((prev) => ({ ...prev, resetGame: false }));
+    }
+  }, []);
+
+  // Reset cards only
+  const handleResetCards = useCallback(async () => {
+    if (!window.confirm('¿Estás seguro de reiniciar los cartones? Se eliminarán TODOS los cartones comprados.')) return;
+
+    setControlsLoading((prev) => ({ ...prev, resetCards: true }));
+    try {
+      const adminToken = localStorage.getItem('admin-token');
+      const response = await fetch(`${config.apiUrl}/api/admin/cards/reset`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ generateCount: 100 }),
+      });
+
+      if (!response.ok) throw new Error('Error al reiniciar cartones');
+
+      const data = await response.json();
+      alert(`Cartones reiniciados. Eliminados: ${data.deletedPurchased}, Disponibles: ${data.availableCards}`);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setControlsLoading((prev) => ({ ...prev, resetCards: false }));
+    }
+  }, []);
+
+  // Full reset - game AND cards
+  const handleFullReset = useCallback(async () => {
+    if (!window.confirm('⚠️ RESET COMPLETO ⚠️\n\n¿Estás seguro? Esto reiniciará:\n- El juego (números cantados)\n- TODOS los cartones comprados\n\nEsta acción no se puede deshacer.')) return;
+
+    setControlsLoading((prev) => ({ ...prev, fullReset: true }));
+    try {
+      const adminToken = localStorage.getItem('admin-token');
+      const response = await fetch(`${config.apiUrl}/api/admin/full-reset`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ generateCount: 100 }),
+      });
+
+      if (!response.ok) throw new Error('Error en reset completo');
+
+      const data = await response.json();
+      setGameState(data.game);
+      setAvailableNumbers(ALL_NUMBERS);
+      alert(`Reset completo exitoso.\nCartones eliminados: ${data.cards.deletedPurchased}\nCartones disponibles: ${data.cards.availableCards}`);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setControlsLoading((prev) => ({ ...prev, fullReset: false }));
+    }
+  }, []);
 
   // Login form - SECURITY: Requires wallet + password
   if (!isAuthenticated) {
@@ -282,20 +405,15 @@ function Admin() {
     );
   }
 
-  const { status, calledNumbers = [], currentNumber } = gameState;
+  const { status, calledNumbers, currentNumber } = gameState;
 
   return (
     <div className="container admin">
       <header className="admin-header">
         <h1>Panel de Administrador</h1>
-        <div className="header-status">
-          <span className={`connection-status ${socketConnected ? 'connected' : 'disconnected'}`}>
-            {socketConnected ? 'Conectado' : 'Desconectado'}
-          </span>
-          <button onClick={handleLogout} className="btn-logout">
-            Cerrar Sesión
-          </button>
-        </div>
+        <button onClick={handleLogout} className="btn-logout">
+          Cerrar Sesión
+        </button>
       </header>
 
       {/* Game Status */}
@@ -363,6 +481,37 @@ function Admin() {
             </button>
           )}
         </div>
+      </section>
+
+      {/* Reset Controls */}
+      <section className="reset-section card">
+        <h2>Controles de Reset</h2>
+        <div className="reset-controls">
+          <button
+            onClick={handleResetGame}
+            className="btn-control btn-warning"
+            disabled={controlsLoading.resetGame || status === 'playing'}
+          >
+            {controlsLoading.resetGame ? 'Reiniciando...' : 'Reiniciar Juego'}
+          </button>
+          <button
+            onClick={handleResetCards}
+            className="btn-control btn-warning"
+            disabled={controlsLoading.resetCards || status === 'playing'}
+          >
+            {controlsLoading.resetCards ? 'Reiniciando...' : 'Reiniciar Cartones'}
+          </button>
+          <button
+            onClick={handleFullReset}
+            className="btn-control btn-danger"
+            disabled={controlsLoading.fullReset || status === 'playing'}
+          >
+            {controlsLoading.fullReset ? 'Reiniciando...' : 'Reset Completo'}
+          </button>
+        </div>
+        <p className="reset-note">
+          Los controles de reset están deshabilitados mientras hay un juego en progreso.
+        </p>
       </section>
 
       {/* Current Number */}
@@ -506,7 +655,7 @@ function Admin() {
                 {/* Winner Check Result */}
                 {selectedCard.isWinner && (
                   <div className="winner-badge">
-                    BINGO! - {selectedCard.winPattern}
+                    ¡BINGO! - {selectedCard.winPattern}
                   </div>
                 )}
 

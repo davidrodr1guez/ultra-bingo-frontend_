@@ -5,12 +5,71 @@
  * Usa viem directamente con window.ethereum para máxima compatibilidad
  */
 
-import { createWalletClient, custom, toHex } from 'viem';
-import { avalanche, base } from 'viem/chains';
+import { createWalletClient, custom, toHex, defineChain } from 'viem';
+import { avalanche, base, polygon, mainnet, arbitrum, optimism, celo } from 'viem/chains';
 import { config } from '../config';
+
+// Define custom chains for viem
+const monad = defineChain({
+  id: 143,
+  name: 'Monad',
+  nativeCurrency: { name: 'Monad', symbol: 'MON', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.monad.xyz'] } },
+  blockExplorers: { default: { name: 'Monad Explorer', url: 'https://explorer.monad.xyz' } },
+});
+
+const hyperevm = defineChain({
+  id: 999,
+  name: 'HyperEVM',
+  nativeCurrency: { name: 'Hyper', symbol: 'HYPER', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.hyperevm.xyz'] } },
+  blockExplorers: { default: { name: 'HyperEVM Explorer', url: 'https://explorer.hyperevm.xyz' } },
+});
+
+const unichain = defineChain({
+  id: 130,
+  name: 'Unichain',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.unichain.org'] } },
+  blockExplorers: { default: { name: 'Unichain Explorer', url: 'https://explorer.unichain.org' } },
+});
+
+// All supported EVM chains (uvd-x402-sdk compatible)
+const SUPPORTED_CHAINS = {
+  avalanche,
+  base,
+  polygon,
+  ethereum: mainnet,
+  arbitrum,
+  optimism,
+  celo,
+  monad,
+  hyperevm,
+  unichain,
+};
 
 // Estado global de la wallet
 let walletClient = null;
+
+// Selected network (can be changed by user)
+let selectedNetwork = 'avalanche';
+
+/**
+ * Set the selected network for payments
+ */
+export function setSelectedNetwork(network) {
+  if (SUPPORTED_CHAINS[network]) {
+    selectedNetwork = network;
+    console.log(`[x402] Network changed to: ${network}`);
+  }
+}
+
+/**
+ * Get the current selected network
+ */
+export function getSelectedNetwork() {
+  return selectedNetwork;
+}
 
 /**
  * Verifica si hay una wallet instalada (MetaMask, etc.)
@@ -20,10 +79,10 @@ export function hasWalletProvider() {
 }
 
 /**
- * Obtiene la chain correcta según la configuración
+ * Obtiene la chain correcta según la red seleccionada
  */
 function getChain() {
-  return config.x402?.network === 'base' ? base : avalanche;
+  return SUPPORTED_CHAINS[selectedNetwork] || avalanche;
 }
 
 /**
@@ -123,6 +182,85 @@ export async function getWalletState() {
       chainId: null,
       balance: null,
     };
+  }
+}
+
+/**
+ * Obtiene el balance de USDC del usuario
+ * @returns {Promise<{balance: string, balanceFormatted: string, hasEnough: function, skipped: boolean}>}
+ */
+export async function getUSDCBalance() {
+  if (!hasWalletProvider()) {
+    // No wallet - skip check, let payment process handle it
+    return { balance: '0', balanceFormatted: '0.00', hasEnough: () => true, skipped: true };
+  }
+
+  try {
+    const accounts = await window.ethereum.request({
+      method: 'eth_accounts',
+    });
+
+    if (!accounts || accounts.length === 0) {
+      return { balance: '0', balanceFormatted: '0.00', hasEnough: () => true, skipped: true };
+    }
+
+    const address = accounts[0];
+    const targetChain = getChain();
+
+    // Check if on correct network
+    const currentChainId = await window.ethereum.request({
+      method: 'eth_chainId',
+    });
+    const currentChainIdNum = parseInt(currentChainId, 16);
+
+    // If on wrong network, skip balance check - payment process will switch network
+    if (currentChainIdNum !== targetChain.id) {
+      console.log(`[x402] On chain ${currentChainIdNum}, target is ${targetChain.id} - skipping balance check`);
+      return { balance: '0', balanceFormatted: '0.00', hasEnough: () => true, skipped: true };
+    }
+
+    // USDC contract addresses (from uvd-x402-sdk)
+    const usdcAddresses = {
+      43114: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', // Avalanche
+      8453: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base
+      137: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', // Polygon
+      1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // Ethereum
+      42161: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // Arbitrum
+      10: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', // Optimism
+      42220: '0xcebA9300f2b948710d2653dD7B07f33A8B32118C', // Celo
+      143: '0x754704bc059f8c67012fed69bc8a327a5aafb603', // Monad
+      999: '0xb88339CB7199b77E23DB6E890353E22632Ba630f', // HyperEVM
+      130: '0x078d782b760474a361dda0af3839290b0ef57ad6', // Unichain
+    };
+    const usdcAddress = usdcAddresses[targetChain.id] || usdcAddresses[43114];
+
+    // ERC20 balanceOf call
+    const balanceOfData = '0x70a08231' + address.slice(2).padStart(64, '0');
+
+    const result = await window.ethereum.request({
+      method: 'eth_call',
+      params: [
+        {
+          to: usdcAddress,
+          data: balanceOfData,
+        },
+        'latest',
+      ],
+    });
+
+    const balanceWei = BigInt(result || '0x0');
+    const balanceFormatted = (Number(balanceWei) / 1_000_000).toFixed(2);
+
+    return {
+      balance: balanceWei.toString(),
+      balanceFormatted,
+      hasEnough: (amountUSDC) => balanceWei >= BigInt(Math.round(amountUSDC * 1_000_000)),
+      skipped: false,
+    };
+  } catch (error) {
+    console.error('Error getting USDC balance:', error);
+    // On error, skip check and let payment process handle it
+    return { balance: '0', balanceFormatted: '0.00', hasEnough: () => true, skipped: true };
   }
 }
 
@@ -243,11 +381,18 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
   // Generar nonce aleatorio
   const authorizationNonce = generateNonce();
 
-  // USDC contract address por chain
+  // USDC contract address por chain (from uvd-x402-sdk)
   const usdcAddresses = {
-    43114: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', // Avalanche USDC
-    8453: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base USDC
-    84532: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', // Base Sepolia USDC
+    43114: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', // Avalanche
+    8453: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base
+    137: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', // Polygon
+    1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // Ethereum
+    42161: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // Arbitrum
+    10: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', // Optimism
+    42220: '0xcebA9300f2b948710d2653dD7B07f33A8B32118C', // Celo
+    143: '0x754704bc059f8c67012fed69bc8a327a5aafb603', // Monad
+    999: '0xb88339CB7199b77E23DB6E890353E22632Ba630f', // HyperEVM
+    130: '0x078d782b760474a361dda0af3839290b0ef57ad6', // Unichain
   };
   const usdcAddress = usdcAddresses[chain.id] || usdcAddresses[43114];
 
@@ -420,9 +565,12 @@ export default {
   hasWalletProvider,
   connectWallet,
   getWalletState,
+  getUSDCBalance,
   switchToCorrectNetwork,
   signPaymentAuthorization,
   encodePaymentHeader,
   createPaymentFetch,
   getX402Functions,
+  setSelectedNetwork,
+  getSelectedNetwork,
 };

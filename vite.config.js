@@ -6,6 +6,20 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    strictPort: true, // Fail if port is already in use instead of trying another
+    strictPort: true,
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Vendor chunks - split large dependencies
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-wagmi': ['wagmi', 'viem', '@wagmi/core', '@wagmi/connectors'],
+          'vendor-motion': ['framer-motion'],
+          'vendor-socket': ['socket.io-client'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 300,
   },
 })

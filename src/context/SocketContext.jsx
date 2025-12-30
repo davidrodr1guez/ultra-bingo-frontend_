@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { io } from 'socket.io-client';
 import { config } from '../config';
 
 const SocketContext = createContext(null);
@@ -7,20 +8,19 @@ export function SocketProvider({ children }) {
   const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [gameState, setGameState] = useState({
-    status: 'waiting',
-    gameMode: 'fullCard',
+    status: 'waiting', // waiting, playing, paused, ended
+    gameMode: 'fullCard', // Current game mode (ULTRA patterns)
     calledNumbers: [],
     currentNumber: null,
     winner: null,
-    potentialWinners: [],
-    canPurchase: true,
-    patternInfo: null,
-    lastRejectedWinner: null,
-    showContinueMessage: false,
+    potentialWinners: [], // Cards that have completed BINGO
+    canPurchase: true, // Whether card purchases are allowed
+    patternInfo: null, // Current pattern info
+    lastRejectedWinner: null, // Track last rejected winner for "Continua el juego" message
+    showContinueMessage: false, // Show "Continua el juego" message
   });
-  const reconnectTimeoutRef = useRef(null);
+  const hasReconnectedRef = useRef(false);
   const continueMessageTimeoutRef = useRef(null);
-  const wsRef = useRef(null);
 
   // Get auth info from localStorage
   const getAuthInfo = () => {
@@ -36,358 +36,302 @@ export function SocketProvider({ children }) {
     return { token: null, isAdmin: false };
   };
 
-  // Send message to WebSocket
-  const sendMessage = useCallback((type, payload = {}) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type, payload }));
-    }
-  }, []);
-
-  // Handle incoming WebSocket messages
-  const handleMessage = useCallback((event) => {
-    try {
-      const message = JSON.parse(event.data);
-      const { type, payload } = message;
-
-      switch (type) {
-        case 'pong':
-          // Heartbeat response
-          break;
-
-        case 'authenticated':
-          console.log('WebSocket authenticated:', payload);
-          // Request current game state after auth
-          sendMessage('getGameState');
-          break;
-
-        case 'gameState':
-        case 'gameUpdate':
-          setGameState((prev) => ({
-            ...prev,
-            status: payload?.status || prev.status,
-            gameMode: payload?.gameMode || prev.gameMode,
-            calledNumbers: payload?.calledNumbers || prev.calledNumbers || [],
-            currentNumber: payload?.currentNumber ?? prev.currentNumber,
-            winner: payload?.winner || prev.winner,
-            cardsSold: payload?.cardsSold || prev.cardsSold,
-            prizePool: payload?.prizePool || prev.prizePool,
-            potentialWinners: payload?.potentialWinners || prev.potentialWinners || [],
-          }));
-          break;
-
-        case 'numberCalled':
-          setGameState((prev) => ({
-            ...prev,
-            currentNumber: payload.number,
-            calledNumbers: payload.calledNumbers || [...(prev.calledNumbers || []), payload.number],
-          }));
-          break;
-
-        case 'gameStarted':
-          setGameState((prev) => ({
-            ...prev,
-            status: 'playing',
-            calledNumbers: [],
-            currentNumber: null,
-            winner: null,
-            potentialWinners: [],
-            canPurchase: false,
-            gameMode: payload?.gameMode || prev.gameMode,
-          }));
-          break;
-
-        case 'gamePaused':
-          setGameState((prev) => ({
-            ...prev,
-            status: 'paused',
-          }));
-          break;
-
-        case 'gameResumed':
-          setGameState((prev) => ({
-            ...prev,
-            status: 'playing',
-          }));
-          break;
-
-        case 'gameEnded':
-          setGameState((prev) => ({
-            ...prev,
-            status: 'ended',
-            winner: payload?.winner || null,
-            potentialWinners: [],
-            canPurchase: true,
-          }));
-          break;
-
-        case 'gameCleared':
-          setGameState((prev) => ({
-            ...prev,
-            status: 'waiting',
-            calledNumbers: [],
-            currentNumber: null,
-            winner: null,
-            potentialWinners: [],
-            canPurchase: true,
-            showContinueMessage: false,
-          }));
-          break;
-
-        case 'gameModeChanged':
-          setGameState((prev) => ({
-            ...prev,
-            gameMode: payload.mode || payload.gameMode,
-            patternInfo: payload.patternInfo || null,
-          }));
-          break;
-
-        case 'winnerAnnounced':
-          setGameState((prev) => ({
-            ...prev,
-            winner: payload?.winner || null,
-            potentialWinners: [],
-          }));
-          break;
-
-        case 'potentialWinner':
-        case 'bingoClaim':
-          setGameState((prev) => {
-            const currentWinners = prev?.potentialWinners || [];
-            const exists = currentWinners.some(w => w.cardId === payload.cardId);
-            if (exists) return prev;
-            return {
-              ...prev,
-              potentialWinners: [...currentWinners, payload],
-              showContinueMessage: false,
-            };
-          });
-          break;
-
-        case 'winnerRejected':
-          setGameState((prev) => {
-            const currentWinners = prev?.potentialWinners || [];
-            return {
-              ...prev,
-              potentialWinners: currentWinners.filter(w => w.cardId !== payload.cardId),
-              lastRejectedWinner: payload.cardId,
-              showContinueMessage: true,
-            };
-          });
-          if (continueMessageTimeoutRef.current) {
-            clearTimeout(continueMessageTimeoutRef.current);
-          }
-          continueMessageTimeoutRef.current = setTimeout(() => {
-            setGameState((prev) => ({
-              ...prev,
-              showContinueMessage: false,
-            }));
-          }, 5000);
-          break;
-
-        case 'error':
-          console.error('WebSocket error:', payload);
-          break;
-
-        default:
-          console.log('Unknown WebSocket message type:', type, payload);
-      }
-    } catch (error) {
-      console.error('Error parsing WebSocket message:', error);
-    }
-  }, [sendMessage]);
-
-  // Connect to WebSocket
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-
-    const wsUrl = config.wsUrl;
-    console.log('Connecting to WebSocket:', wsUrl);
-
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log('WebSocket connected');
-      setIsConnected(true);
-      setSocket(ws);
-
-      // Authenticate after connection
-      const { token } = getAuthInfo();
-      if (token) {
-        sendMessage('authenticate', { token });
-      } else {
-        // If no token, just get game state
-        sendMessage('getGameState');
-      }
-
-      // Start heartbeat
-      const heartbeat = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          sendMessage('ping');
-        } else {
-          clearInterval(heartbeat);
-        }
-      }, 30000);
-    };
-
-    ws.onmessage = handleMessage;
-
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-      setIsConnected(false);
-      setSocket(null);
-      wsRef.current = null;
-
-      // Attempt reconnection after 3 seconds
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      reconnectTimeoutRef.current = setTimeout(() => {
-        console.log('Attempting WebSocket reconnection...');
-        connect();
-      }, 3000);
-    };
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-    };
-  }, [handleMessage, sendMessage]);
-
-  // Initialize WebSocket connection
   useEffect(() => {
-    connect();
+    const { token, isAdmin } = getAuthInfo();
 
-    return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
+    // Create socket connection with auth
+    const newSocket = io(config.wsUrl, {
+      autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      auth: {
+        token,
+        isAdmin,
+      },
+    });
+
+    // Connection events
+    newSocket.on('connect', () => {
+      setIsConnected(true);
+    });
+
+    newSocket.on('disconnect', () => {
+      setIsConnected(false);
+    });
+
+    // Handle connection errors silently
+    newSocket.on('connect_error', () => {});
+
+    // Handle general errors from server silently
+    newSocket.on('error', () => {});
+
+    // Game events
+    newSocket.on('game-state', (state) => {
+      // CRITICAL: Ensure all required fields exist to prevent crashes
+      setGameState((prev) => ({
+        ...prev,
+        ...state,
+        // Ensure arrays are always defined
+        calledNumbers: state?.calledNumbers || prev?.calledNumbers || [],
+        potentialWinners: state?.potentialWinners || prev?.potentialWinners || [],
+      }));
+    });
+
+    newSocket.on('number-called', (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        currentNumber: data.number,
+        calledNumbers: [...(prev?.calledNumbers || []), data.number],
+      }));
+    });
+
+    newSocket.on('number-uncalled', (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        currentNumber: data.currentNumber,
+        calledNumbers: data.calledNumbers || (prev?.calledNumbers || []).filter(n => n !== data.number),
+      }));
+    });
+
+    newSocket.on('game-started', (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        status: 'playing',
+        calledNumbers: [],
+        currentNumber: null,
+        winner: null,
+        potentialWinners: [], // Reset potential winners on new game
+        canPurchase: false,
+        gameMode: data?.gameMode || prev?.gameMode || 'fullCard',
+      }));
+    });
+
+    newSocket.on('game-mode-changed', (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        gameMode: data.mode,
+        patternInfo: data.patternInfo || null,
+      }));
+    });
+
+    newSocket.on('game-paused', () => {
+      setGameState((prev) => ({
+        ...prev,
+        status: 'paused',
+      }));
+    });
+
+    newSocket.on('game-resumed', () => {
+      setGameState((prev) => ({
+        ...prev,
+        status: 'playing',
+      }));
+    });
+
+    newSocket.on('game-ended', (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        status: 'ended',
+        winner: data?.winner || null,
+        potentialWinners: [], // Clear potential winners when game ends
+        canPurchase: true,
+      }));
+    });
+
+    newSocket.on('game-cleared', (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        status: 'waiting',
+        calledNumbers: [],
+        currentNumber: null,
+        winner: null,
+        potentialWinners: [],
+        canPurchase: true,
+        showContinueMessage: false,
+      }));
+    });
+
+    newSocket.on('winner-announced', (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        winner: data?.winner || null,
+        potentialWinners: [], // Clear potential winners when official winner announced
+      }));
+    });
+
+    // Potential winner detected (BINGO completed)
+    newSocket.on('potential-winner', (data) => {
+      setGameState((prev) => {
+        // CRITICAL: Ensure potentialWinners is always an array
+        const currentWinners = prev?.potentialWinners || [];
+        // Avoid duplicates
+        const exists = currentWinners.some(w => w.cardId === data.cardId);
+        if (exists) return prev;
+        return {
+          ...prev,
+          potentialWinners: [...currentWinners, data],
+          showContinueMessage: false, // Hide continue message when new winner detected
+        };
+      });
+    });
+
+    // Winner rejected - game continues
+    newSocket.on('winner-rejected', (data) => {
+      setGameState((prev) => {
+        const currentWinners = prev?.potentialWinners || [];
+        return {
+          ...prev,
+          potentialWinners: currentWinners.filter(w => w.cardId !== data.cardId),
+          lastRejectedWinner: data.cardId,
+          showContinueMessage: true, // Show "Continua el juego" message
+        };
+      });
+      // Auto-hide the continue message after 5 seconds
+      // Clear any existing timeout to prevent memory leaks
       if (continueMessageTimeoutRef.current) {
         clearTimeout(continueMessageTimeoutRef.current);
       }
-      if (wsRef.current) {
-        wsRef.current.close();
+      continueMessageTimeoutRef.current = setTimeout(() => {
+        setGameState((prev) => ({
+          ...prev,
+          showContinueMessage: false,
+        }));
+        continueMessageTimeoutRef.current = null;
+      }, 5000);
+    });
+
+    setSocket(newSocket);
+
+    // Cleanup on unmount - IMPORTANT: Remove all listeners to prevent memory leaks
+    return () => {
+      // Clear any pending timeout
+      if (continueMessageTimeoutRef.current) {
+        clearTimeout(continueMessageTimeoutRef.current);
+        continueMessageTimeoutRef.current = null;
       }
+      newSocket.off('connect');
+      newSocket.off('disconnect');
+      newSocket.off('connect_error');
+      newSocket.off('error');
+      newSocket.off('game-state');
+      newSocket.off('number-called');
+      newSocket.off('number-uncalled');
+      newSocket.off('game-started');
+      newSocket.off('game-paused');
+      newSocket.off('game-resumed');
+      newSocket.off('game-ended');
+      newSocket.off('game-cleared');
+      newSocket.off('game-mode-changed');
+      newSocket.off('winner-announced');
+      newSocket.off('potential-winner');
+      newSocket.off('winner-rejected');
+      newSocket.close();
     };
-  }, [connect]);
-
-  // API helper for admin actions
-  const apiCall = useCallback(async (endpoint, method = 'POST', body = null) => {
-    const { token } = getAuthInfo();
-    const options = {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token && { Authorization: `Bearer ${token}` }),
-      },
-    };
-    if (body) {
-      options.body = JSON.stringify(body);
-    }
-
-    const response = await fetch(`${config.apiUrl}${endpoint}`, options);
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'API request failed');
-    }
-
-    return data;
   }, []);
 
-  // Join a game room (for native WebSocket, just request game state)
-  const joinGame = useCallback(() => {
-    sendMessage('getGameState');
-  }, [sendMessage]);
-
-  // Leave a game room (no-op for native WebSocket)
-  const leaveGame = useCallback(() => {}, []);
-
-  // ============== ADMIN FUNCTIONS (via REST API) ==============
-
-  const startGame = useCallback(async () => {
-    try {
-      await apiCall('/api/admin/game/start');
-    } catch (error) {
-      console.error('Failed to start game:', error);
+  // Join a game room - useCallback to prevent unnecessary re-renders
+  const joinGame = useCallback((gameId) => {
+    if (socket) {
+      socket.emit('join-game', { gameId });
     }
-  }, [apiCall]);
+  }, [socket]);
 
-  const pauseGame = useCallback(async () => {
-    try {
-      await apiCall('/api/admin/game/pause');
-    } catch (error) {
-      console.error('Failed to pause game:', error);
+  // Leave a game room - useCallback to prevent unnecessary re-renders
+  const leaveGame = useCallback((gameId) => {
+    if (socket) {
+      socket.emit('leave-game', { gameId });
     }
-  }, [apiCall]);
+  }, [socket]);
 
-  const resumeGame = useCallback(async () => {
-    try {
-      await apiCall('/api/admin/game/resume');
-    } catch (error) {
-      console.error('Failed to resume game:', error);
-    }
-  }, [apiCall]);
+  // ============== ADMIN FUNCTIONS ==============
 
-  const endGame = useCallback(async (winner = null) => {
-    try {
-      await apiCall('/api/admin/game/end', 'POST', { winner });
-    } catch (error) {
-      console.error('Failed to end game:', error);
-    }
-  }, [apiCall]);
+  // Admin: Start game
+  const startGame = useCallback(() => {
+    if (socket) {
+      socket.emit('admin:start-game');
+          }
+  }, [socket]);
 
-  const clearGame = useCallback(async () => {
-    try {
-      await apiCall('/api/admin/game/end');
-    } catch (error) {
-      console.error('Failed to clear game:', error);
-    }
-  }, [apiCall]);
+  // Admin: Pause game
+  const pauseGame = useCallback(() => {
+    if (socket) {
+      socket.emit('admin:pause-game');
+          }
+  }, [socket]);
 
-  const callNumber = useCallback(async (number) => {
-    try {
-      await apiCall('/api/admin/game/call', 'POST', { number });
-    } catch (error) {
-      console.error('Failed to call number:', error);
-    }
-  }, [apiCall]);
+  // Admin: Resume game
+  const resumeGame = useCallback(() => {
+    if (socket) {
+      socket.emit('admin:resume-game');
+          }
+  }, [socket]);
 
-  const verifyWinner = useCallback(async (cardId, odId) => {
-    try {
-      await apiCall('/api/admin/game/verify', 'POST', { cardId, odId });
-    } catch (error) {
-      console.error('Failed to verify winner:', error);
-    }
-  }, [apiCall]);
+  // Admin: End game
+  const endGame = useCallback((winner = null) => {
+    if (socket) {
+      socket.emit('admin:end-game', { winner });
+          }
+  }, [socket]);
 
-  const rejectWinner = useCallback(async (cardId) => {
-    try {
-      // For now, just remove from local state
-      setGameState((prev) => ({
-        ...prev,
-        potentialWinners: (prev.potentialWinners || []).filter(w => w.cardId !== cardId),
-        showContinueMessage: true,
-      }));
-    } catch (error) {
-      console.error('Failed to reject winner:', error);
-    }
-  }, []);
+  // Admin: Clear game (reset UI without starting new game)
+  const clearGame = useCallback(() => {
+    if (socket) {
+      socket.emit('admin:clear-game');
+          }
+  }, [socket]);
 
-  const setGameMode = useCallback(async (mode) => {
-    try {
-      await apiCall('/api/admin/game/mode', 'POST', { gameMode: mode });
-    } catch (error) {
-      console.error('Failed to set game mode:', error);
-    }
-  }, [apiCall]);
+  // Admin: Call number
+  const callNumber = useCallback((number) => {
+    if (socket) {
+      socket.emit('admin:call-number', { number });
+          }
+  }, [socket]);
 
-  // Reconnect with new auth
+  // Admin: Uncall number (remove incorrectly called number)
+  const uncallNumber = useCallback((number) => {
+    if (socket) {
+      socket.emit('admin:uncall-number', { number });
+          }
+  }, [socket]);
+
+  // Admin: Verify winner
+  const verifyWinner = useCallback((cardId) => {
+    if (socket) {
+      socket.emit('admin:verify-winner', { cardId });
+          }
+  }, [socket]);
+
+  // Admin: Reject potential winner and resume game
+  const rejectWinner = useCallback((cardId) => {
+    if (socket) {
+      socket.emit('admin:reject-winner', { cardId });
+          }
+  }, [socket]);
+
+  // Admin: Set game mode
+  const setGameMode = useCallback((mode) => {
+    if (socket) {
+      socket.emit('admin:set-game-mode', { mode });
+          }
+  }, [socket]);
+
+  // Reconnect with new auth (useful after login)
   const reconnectWithAuth = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
+    if (socket && !hasReconnectedRef.current) {
+      hasReconnectedRef.current = true;
+      const { token, isAdmin } = getAuthInfo();
+      socket.auth = { token, isAdmin };
+      socket.disconnect();
+      setTimeout(() => {
+        socket.connect();
+                // Reset after a delay to allow future reconnects if needed
+        setTimeout(() => {
+          hasReconnectedRef.current = false;
+        }, 5000);
+      }, 100);
     }
-    setTimeout(connect, 100);
-  }, [connect]);
+  }, [socket]);
 
   const value = {
     socket,
@@ -395,12 +339,14 @@ export function SocketProvider({ children }) {
     gameState,
     joinGame,
     leaveGame,
+    // Admin functions
     startGame,
     pauseGame,
     resumeGame,
     endGame,
     clearGame,
     callNumber,
+    uncallNumber,
     verifyWinner,
     rejectWinner,
     setGameMode,

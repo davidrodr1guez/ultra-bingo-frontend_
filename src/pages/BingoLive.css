@@ -517,6 +517,17 @@
   background: rgba(255, 215, 0, 0.2) !important;
 }
 
+.number-cell.uncallable {
+  cursor: pointer;
+  border: 1px dashed rgba(255, 100, 100, 0.5);
+}
+
+.number-cell.uncallable:hover {
+  border-color: rgba(255, 100, 100, 1);
+  background: rgba(255, 100, 100, 0.3) !important;
+  color: #fff !important;
+}
+
 /* ===== BINGO ALERT - Visible to everyone ===== */
 .bingo-alert-overlay {
   position: fixed;
@@ -1271,5 +1282,165 @@
 
   .pw-actions {
     flex-direction: column;
+  }
+}
+
+/* ===== SIMPLIFIED ADMIN CONTROLS ===== */
+.admin-controls-simple {
+  margin-bottom: 1.5rem;
+}
+
+.admin-buttons-card {
+  padding: 1rem 1.5rem !important;
+}
+
+.admin-header-simple {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.admin-badge-small {
+  padding: 0.25rem 0.6rem;
+  background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%);
+  color: #000;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 12px;
+}
+
+.reset-msg {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+}
+
+.reset-msg.success {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+}
+
+.reset-msg.error {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+/* Potential Winner Alert - Compact */
+.potential-winner-alert {
+  background: rgba(255, 215, 0, 0.1);
+  border: 1px solid rgba(255, 215, 0, 0.3);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.pw-alert-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.pw-alert-icon {
+  font-size: 1.25rem;
+}
+
+.pw-alert-info {
+  flex: 1;
+  font-size: 0.9rem;
+  color: var(--color-text);
+}
+
+.pw-alert-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.pw-accept-btn, .pw-reject-btn {
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.pw-accept-btn {
+  background: #10b981;
+  color: #fff;
+}
+
+.pw-accept-btn:hover {
+  background: #059669;
+}
+
+.pw-reject-btn {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.pw-reject-btn:hover {
+  background: rgba(239, 68, 68, 0.4);
+}
+
+/* Admin buttons row */
+.admin-buttons-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.admin-btn.reset-btn-small,
+.admin-btn.danger-btn-small {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+}
+
+.admin-btn.reset-btn-small {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--color-text-muted);
+}
+
+.admin-btn.reset-btn-small:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+  color: var(--color-text);
+}
+
+.admin-btn.danger-btn-small {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.admin-btn.danger-btn-small:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.4);
+}
+
+.admin-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.admin-hint-small {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 0.75rem;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .admin-buttons-row {
+    justify-content: center;
+  }
+
+  .pw-alert-item {
+    flex-direction: column;
+    text-align: center;
   }
 }

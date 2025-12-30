@@ -2,12 +2,26 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
-import { createPaymentFetch, getWalletState, hasWalletProvider } from '../services/x402';
+import { createPaymentFetch, getWalletState, hasWalletProvider, getUSDCBalance, setSelectedNetwork } from '../services/x402';
 import { CardQuantitySelector, NumberBall } from '../components/bingo';
 import { GlowButton, GlassCard, AnimatedBackground } from '../components/ui';
 import { AnimatedTitle, FadeUpText, GradientText } from '../components/ui/AnimatedText';
 import { config } from '../config';
 import './Home.css';
+
+// Network info with logos/icons (all uvd-x402-sdk supported EVM mainnets)
+const NETWORK_INFO = {
+  avalanche: { name: 'Avalanche', icon: '🔺', color: '#E84142' },
+  base: { name: 'Base', icon: '🔵', color: '#0052FF' },
+  polygon: { name: 'Polygon', icon: '🟣', color: '#8247E5' },
+  ethereum: { name: 'Ethereum', icon: '⟠', color: '#627EEA' },
+  arbitrum: { name: 'Arbitrum', icon: '🔷', color: '#28A0F0' },
+  optimism: { name: 'Optimism', icon: '🔴', color: '#FF0420' },
+  celo: { name: 'Celo', icon: '🟡', color: '#FCFF52' },
+  monad: { name: 'Monad', icon: '⚡', color: '#836EF9' },
+  hyperevm: { name: 'HyperEVM', icon: '⚡', color: '#00D395' },
+  unichain: { name: 'Unichain', icon: '🦄', color: '#FF007A' },
+};
 
 // Timeout for payment operations (30 seconds)
 const PAYMENT_TIMEOUT_MS = 30000;
@@ -22,9 +36,26 @@ function Home() {
   const [error, setError] = useState(null);
   const [paymentStatus, setPaymentStatus] = useState(null);
   const [isWalletReady, setIsWalletReady] = useState(false);
+  const [selectedNet, setSelectedNet] = useState(() => {
+    return localStorage.getItem('ultra-bingo-network') || 'avalanche';
+  });
 
   // Ref to prevent double-click race condition
   const isPurchasingRef = useRef(false);
+
+  // Handle network change
+  const handleNetworkChange = (network) => {
+    if (NETWORK_INFO[network]?.disabled) return;
+    setSelectedNet(network);
+    localStorage.setItem('ultra-bingo-network', network);
+    setSelectedNetwork(network);
+  };
+
+  // Initialize network on mount
+  useEffect(() => {
+    const savedNetwork = localStorage.getItem('ultra-bingo-network') || 'avalanche';
+    setSelectedNetwork(savedNetwork);
+  }, []);
 
   // Check wallet state on mount and when connection changes
   useEffect(() => {
@@ -97,6 +128,25 @@ function Home() {
 
     setPurchasing(true);
     setError(null);
+    setPaymentStatus('Verificando balance...');
+
+    // Check USDC balance before attempting purchase
+    try {
+      const totalCost = quantity * config.cardPrice;
+      const usdcBalance = await getUSDCBalance();
+
+      if (!usdcBalance.hasEnough(totalCost)) {
+        isPurchasingRef.current = false;
+        setPurchasing(false);
+        setPaymentStatus(null);
+        setError(`Fondos insuficientes. Necesitas ${totalCost.toFixed(2)} USDC pero tienes ${usdcBalance.balanceFormatted} USDC en tu wallet.`);
+        return;
+      }
+    } catch (balanceErr) {
+      console.warn('Could not check balance:', balanceErr);
+      // Continue anyway - the payment will fail if insufficient
+    }
+
     setPaymentStatus('Iniciando pago...');
 
     // Create AbortController for timeout
@@ -118,6 +168,7 @@ function Home() {
         body: JSON.stringify({
           quantity,
           wallet: user?.wallet,
+          network: selectedNet,
         }),
         signal: controller.signal,
       });
@@ -144,14 +195,18 @@ function Home() {
       setTimeout(() => setPaymentStatus(null), 3000);
     } catch (err) {
       clearTimeout(timeoutId);
+      const errMsg = err.message?.toLowerCase() || '';
+
       if (err.name === 'AbortError') {
         setError('La operación tardó demasiado. Por favor intenta de nuevo.');
-      } else if (err.message.includes('rejected') || err.message.includes('denied') || err.message.includes('User rejected')) {
-        setError('Transacción rechazada por el usuario');
-      } else if (err.message.includes('Wallet not connected') || err.message.includes('not connected')) {
+      } else if (errMsg.includes('insufficient') || errMsg.includes('balance') || errMsg.includes('funds') || errMsg.includes('exceeds')) {
+        setError('Fondos insuficientes. Verifica que tengas suficiente USDC en tu wallet en la red Avalanche.');
+      } else if (errMsg.includes('rejected') || errMsg.includes('denied') || errMsg.includes('user rejected')) {
+        setError('Transacción rechazada por el usuario.');
+      } else if (errMsg.includes('wallet not connected') || errMsg.includes('not connected')) {
         setError('Wallet no conectada. Por favor conecta tu wallet.');
-      } else if (err.message.includes('network') || err.message.includes('chain')) {
-        setError('Red incorrecta. Por favor cambia a Avalanche.');
+      } else if (errMsg.includes('network') || errMsg.includes('chain') || errMsg.includes('switch')) {
+        setError('Red incorrecta. Por favor cambia a Avalanche C-Chain.');
       } else {
         setError(`Error: ${err.message}`);
       }
@@ -229,6 +284,31 @@ function Home() {
               <div className="stat">
                 <span className="stat-value">75</span>
                 <span className="stat-label">Numeros en juego</span>
+              </div>
+            </motion.div>
+
+            {/* Network Selector */}
+            <motion.div
+              className="network-selector"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.8 }}
+            >
+              <span className="network-label">Paga con USDC en:</span>
+              <div className="network-buttons">
+                {Object.entries(NETWORK_INFO).map(([key, net]) => (
+                  <button
+                    key={key}
+                    className={`network-btn ${selectedNet === key ? 'active' : ''} ${net.disabled ? 'disabled' : ''}`}
+                    onClick={() => handleNetworkChange(key)}
+                    disabled={net.disabled}
+                    style={{ '--network-color': net.color }}
+                  >
+                    <span className="network-icon">{net.icon}</span>
+                    <span className="network-name">{net.name}</span>
+                    {net.soon && <span className="network-soon">Pronto</span>}
+                  </button>
+                ))}
               </div>
             </motion.div>
           </motion.div>

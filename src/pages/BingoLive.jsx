@@ -7,6 +7,9 @@ import { AnimatedBackground, GlassCard } from '../components/ui';
 import { config } from '../config';
 import './BingoLive.css';
 
+// All 75 bingo numbers for reset
+const ALL_NUMBERS_FLAT = Array.from({ length: 75 }, (_, i) => i + 1);
+
 // All possible bingo numbers organized by column
 const ALL_NUMBERS = {
   B: Array.from({ length: 15 }, (_, i) => i + 1),
@@ -37,6 +40,7 @@ function BingoLive() {
     endGame,
     clearGame,
     callNumber,
+    uncallNumber,
     verifyWinner,
     rejectWinner,
     setGameMode,
@@ -50,6 +54,14 @@ function BingoLive() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [showWinnerBanner, setShowWinnerBanner] = useState(false);
+
+  // Admin reset controls
+  const [resetLoading, setResetLoading] = useState({
+    resetGame: false,
+    resetCards: false,
+    fullReset: false,
+  });
+  const [resetMessage, setResetMessage] = useState(null);
 
   // Track if we've already reconnected for admin
   const hasReconnectedForAdminRef = useRef(false);
@@ -93,6 +105,15 @@ function BingoLive() {
       }
     }
   }, [callNumber]); // Only depend on callNumber which is stable
+
+  // Handle admin uncalling a number (removing incorrectly called number)
+  const handleUncallNumber = useCallback((number) => {
+    if (isAdminRef.current && (gameStatusRef.current === 'playing' || gameStatusRef.current === 'paused')) {
+      if (calledNumbersRef.current.includes(number)) {
+        uncallNumber(number);
+      }
+    }
+  }, [uncallNumber]);
 
   // Join game room on mount - use refs to prevent re-running on every render
   useEffect(() => {
@@ -216,6 +237,49 @@ function BingoLive() {
     setGameMode(newMode);
   }, [user?.token, setGameMode]);
 
+  // Admin reset handlers
+  const handleResetAction = useCallback(async (action, endpoint, confirmMsg) => {
+    if (!window.confirm(confirmMsg)) return;
+
+    setResetLoading((prev) => ({ ...prev, [action]: true }));
+    setResetMessage(null);
+
+    try {
+      const response = await fetch(`${config.apiUrl}/api/admin/${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user?.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ generateCount: 100 }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Error en la operación');
+      }
+
+      setResetMessage({ type: 'success', text: '✓ Operación completada' });
+      setTimeout(() => setResetMessage(null), 3000);
+    } catch (err) {
+      setResetMessage({ type: 'error', text: err.message });
+    } finally {
+      setResetLoading((prev) => ({ ...prev, [action]: false }));
+    }
+  }, [user?.token]);
+
+  const handleResetGame = useCallback(() => {
+    handleResetAction('resetGame', 'game/reset', '¿Reiniciar el juego? Se limpiarán los números cantados.');
+  }, [handleResetAction]);
+
+  const handleResetCards = useCallback(() => {
+    handleResetAction('resetCards', 'cards/reset', '¿Reiniciar cartones? Se eliminarán TODOS los cartones comprados.');
+  }, [handleResetAction]);
+
+  const handleFullReset = useCallback(() => {
+    handleResetAction('fullReset', 'full-reset', '⚠️ RESET COMPLETO ⚠️\n\n¿Estás seguro? Esto reiniciará:\n- El juego (números cantados)\n- TODOS los cartones comprados');
+  }, [handleResetAction]);
+
   return (
     <div className="bingo-live">
       <AnimatedBackground />
@@ -318,78 +382,40 @@ function BingoLive() {
           />
         </motion.section>
 
-        {/* Admin Controls Panel */}
+        {/* Admin Controls - Simple buttons */}
         {isAdmin && (
           <motion.section
-            className="admin-controls-section"
+            className="admin-controls-simple"
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.25 }}
           >
-            <GlassCard className="admin-controls-card" glow>
-              <div className="admin-badge">
-                <span className="admin-icon">👑</span>
-                <span>Panel de Administrador</span>
+            <GlassCard className="admin-buttons-card">
+              <div className="admin-header-simple">
+                <span className="admin-badge-small">🔐 Admin</span>
+                {resetMessage && (
+                  <span className={`reset-msg ${resetMessage.type}`}>{resetMessage.text}</span>
+                )}
               </div>
 
-              {/* Potential Winners Panel - Sidebar Style */}
+              {/* Potential Winners Alert */}
               <AnimatePresence>
                 {potentialWinners.length > 0 && (status === 'playing' || status === 'paused') && (
                   <motion.div
-                    className="potential-winners-sidebar"
-                    initial={{ opacity: 0, x: 50 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 50 }}
+                    className="potential-winner-alert"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
                   >
-                    <div className="sidebar-header">
-                      <motion.span
-                        className="sidebar-icon"
-                        animate={{ scale: [1, 1.2, 1] }}
-                        transition={{ duration: 1, repeat: Infinity }}
-                      >
-                        🏆
-                      </motion.span>
-                      <span>Potencial Ganador</span>
-                      <span className="paused-badge">JUEGO PAUSADO</span>
-                    </div>
-
-                    {potentialWinners.map((potentialWinner) => (
-                      <div key={potentialWinner.cardId} className="potential-winner-card">
-                        <div className="pw-info">
-                          <h4>@{potentialWinner.username || 'Anónimo'}</h4>
-                          <p className="pw-card-id">ID: {potentialWinner.cardId}</p>
-                          <p className="pw-pattern">Patrón: <strong>{potentialWinner.pattern}</strong></p>
-                          <p className="pw-wallet">{potentialWinner.wallet?.slice(0, 10)}...</p>
-                        </div>
-
-                        {/* Show card preview if available */}
-                        {potentialWinner.cardNumbers && (
-                          <div className="pw-card-preview">
-                            <BingoCard
-                              card={{ id: potentialWinner.cardId, numbers: potentialWinner.cardNumbers }}
-                              calledNumbers={calledNumbers}
-                              size="small"
-                            />
-                          </div>
-                        )}
-
-                        <div className="pw-actions">
-                          <motion.button
-                            className="pw-btn pw-accept"
-                            onClick={() => verifyWinner(potentialWinner.cardId)}
-                            whileHover={{ scale: 1.05 }}
-                            whileTap={{ scale: 0.95 }}
-                          >
-                            ✓ Aceptar Ganador
-                          </motion.button>
-                          <motion.button
-                            className="pw-btn pw-reject"
-                            onClick={() => rejectWinner(potentialWinner.cardId)}
-                            whileHover={{ scale: 1.05 }}
-                            whileTap={{ scale: 0.95 }}
-                          >
-                            ✗ Rechazar
-                          </motion.button>
+                    {potentialWinners.map((pw) => (
+                      <div key={pw.cardId} className="pw-alert-item">
+                        <span className="pw-alert-icon">🏆</span>
+                        <span className="pw-alert-info">
+                          <strong>@{pw.username || 'Anónimo'}</strong> - {pw.pattern}
+                        </span>
+                        <div className="pw-alert-actions">
+                          <button onClick={() => verifyWinner(pw.cardId)} className="pw-accept-btn">✓</button>
+                          <button onClick={() => rejectWinner(pw.cardId)} className="pw-reject-btn">✗</button>
                         </div>
                       </div>
                     ))}
@@ -397,77 +423,7 @@ function BingoLive() {
                 )}
               </AnimatePresence>
 
-              {/* Card Search Section */}
-              <div className="admin-card-search">
-                <h4>Buscar Cartón por ID</h4>
-                <form onSubmit={handleCardSearch} className="search-form">
-                  <input
-                    type="text"
-                    value={cardSearchQuery}
-                    onChange={(e) => setCardSearchQuery(e.target.value)}
-                    placeholder="card_xxxxxxxx-xxxx-xxxx..."
-                    className="search-input"
-                  />
-                  <motion.button
-                    type="submit"
-                    className="search-btn"
-                    disabled={searchLoading}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                  >
-                    {searchLoading ? '...' : '🔍'}
-                  </motion.button>
-                </form>
-
-                {searchError && (
-                  <p className="search-error">{searchError}</p>
-                )}
-
-                {/* Search Result */}
-                {searchedCard && (
-                  <div className="search-result">
-                    <div className="search-result-header">
-                      <h5>Cartón Encontrado</h5>
-                      <button
-                        className="close-search"
-                        onClick={() => setSearchedCard(null)}
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    <div className="search-result-content">
-                      <div className="search-result-card">
-                        <BingoCard
-                          card={searchedCard.card}
-                          calledNumbers={searchedCard.calledNumbers || calledNumbers}
-                          size="small"
-                        />
-                      </div>
-                      <div className="search-result-info">
-                        <p><strong>Dueño:</strong> @{searchedCard.card.ownerUsername || 'Anónimo'}</p>
-                        <p><strong>Wallet:</strong> {searchedCard.card.ownerWallet?.slice(0, 12)}...</p>
-                        <p><strong>Progreso:</strong> {searchedCard.progress?.completed}/{searchedCard.progress?.total} ({searchedCard.progress?.percentage}%)</p>
-                        <p><strong>Modo:</strong> {searchedCard.gameMode}</p>
-                        {searchedCard.isWinner && (
-                          <p className="search-winner-badge">¡ES GANADOR! ({searchedCard.winnerPattern})</p>
-                        )}
-                      </div>
-                    </div>
-                    {searchedCard.isWinner && status === 'playing' && (
-                      <motion.button
-                        className="verify-search-result-btn"
-                        onClick={() => verifyWinner(searchedCard.card.id)}
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                      >
-                        Verificar y Declarar Ganador
-                      </motion.button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="admin-buttons">
+              <div className="admin-buttons-row">
                 {status === 'waiting' && (
                   <motion.button
                     className="admin-btn start-btn"
@@ -560,11 +516,38 @@ function BingoLive() {
                     </motion.button>
                   </>
                 )}
+                {/* Reset buttons inline */}
+                <motion.button
+                  className="admin-btn reset-btn-small"
+                  onClick={handleResetGame}
+                  disabled={resetLoading.resetGame || status === 'playing'}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  {resetLoading.resetGame ? '...' : '↻ Juego'}
+                </motion.button>
+                <motion.button
+                  className="admin-btn reset-btn-small"
+                  onClick={handleResetCards}
+                  disabled={resetLoading.resetCards || status === 'playing'}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  {resetLoading.resetCards ? '...' : '↻ Cartones'}
+                </motion.button>
+                <motion.button
+                  className="admin-btn danger-btn-small"
+                  onClick={handleFullReset}
+                  disabled={resetLoading.fullReset || status === 'playing'}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  {resetLoading.fullReset ? '...' : '⚠ Total'}
+                </motion.button>
               </div>
-              {status === 'playing' && potentialWinners.length === 0 && (
-                <p className="admin-hint">
-                  Haz clic en cualquier número del tablero para cantarlo
-                </p>
+
+              {(status === 'playing' || status === 'paused') && potentialWinners.length === 0 && (
+                <p className="admin-hint-small">Clic para cantar, clic en cantado para quitar</p>
               )}
             </GlassCard>
           </motion.section>
@@ -726,11 +709,13 @@ function BingoLive() {
                     {numbers.map((num) => {
                       const isCalled = calledNumbers.includes(num);
                       const isCurrent = num === currentNumber;
-                      const isClickable = isAdmin && status === 'playing' && !isCalled;
+                      const canCall = isAdmin && status === 'playing' && !isCalled;
+                      const canUncall = isAdmin && (status === 'playing' || status === 'paused') && isCalled;
+                      const isClickable = canCall || canUncall;
                       return (
                         <motion.div
                           key={num}
-                          className={`number-cell ${isCalled ? 'called' : ''} ${isCurrent ? 'current' : ''} ${isClickable ? 'clickable' : ''}`}
+                          className={`number-cell ${isCalled ? 'called' : ''} ${isCurrent ? 'current' : ''} ${isClickable ? 'clickable' : ''} ${canUncall ? 'uncallable' : ''}`}
                           initial={false}
                           animate={isCalled ? {
                             backgroundColor: `${COLUMN_COLORS[letter]}40`,
@@ -745,10 +730,10 @@ function BingoLive() {
                             boxShadow: `0 0 20px ${COLUMN_COLORS[letter]}`,
                             border: `2px solid ${COLUMN_COLORS[letter]}`,
                           } : {}}
-                          onClick={isClickable ? () => handleCallNumber(num) : undefined}
+                          onClick={canCall ? () => handleCallNumber(num) : canUncall ? () => handleUncallNumber(num) : undefined}
                           whileHover={isClickable ? {
                             scale: 1.15,
-                            backgroundColor: `${COLUMN_COLORS[letter]}60`,
+                            backgroundColor: canUncall ? 'rgba(255, 100, 100, 0.6)' : `${COLUMN_COLORS[letter]}60`,
                             color: '#fff',
                           } : {}}
                           whileTap={isClickable ? { scale: 0.95 } : {}}
