@@ -469,8 +469,10 @@ export async function signPaymentAuthorization(paymentInfo, amount) {
   };
 
   // EIP-712 Domain para USDC
+  // IMPORTANTE: Usar domainNames[chain.id] primero porque cada chain tiene su propio nombre
+  // Monad, Celo, HyperEVM, Unichain usan "USDC", los demás usan "USD Coin"
   const domain = {
-    name: paymentInfo.extra?.name || domainNames[chain.id] || 'USD Coin',
+    name: domainNames[chain.id] || paymentInfo.extra?.name || 'USD Coin',
     version: paymentInfo.extra?.version || '2',
     chainId: chain.id,
     verifyingContract: usdcAddress,
