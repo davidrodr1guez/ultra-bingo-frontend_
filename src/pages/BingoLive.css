@@ -1195,7 +1195,7 @@
   margin: 0 auto 2rem;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1600px) {
   .winners-history-section {
     position: fixed;
     left: 20px;
@@ -1206,7 +1206,7 @@
   }
 }
 
-@media (max-width: 1199px) {
+@media (max-width: 1599px) {
   .winners-history-section {
     max-width: 100%;
   }
@@ -1218,7 +1218,7 @@
   margin: 0 auto 2rem;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1600px) {
   .users-history-section {
     position: fixed;
     right: 20px;
@@ -1229,7 +1229,7 @@
   }
 }
 
-@media (max-width: 1199px) {
+@media (max-width: 1599px) {
   .users-history-section {
     max-width: 100%;
   }
