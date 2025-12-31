@@ -134,7 +134,7 @@ function CardQuantitySelector({
                   transition={{ delay: index * 0.05 }}
                 >
                   <span className="fib-number">{num}</span>
-                  <span className="fib-price">${(num * pricePerCard).toFixed(3)}</span>
+                  <span className="fib-price">${num * pricePerCard}</span>
                 </motion.button>
               ))}
             </div>
@@ -144,7 +144,7 @@ function CardQuantitySelector({
           <div className="price-display">
             <div className="price-breakdown">
               <span className="breakdown-line">
-                {quantity} x ${pricePerCard.toFixed(3)}
+                {quantity} x ${pricePerCard}
               </span>
             </div>
             <motion.div
@@ -155,7 +155,7 @@ function CardQuantitySelector({
             >
               <span className="total-label">Total</span>
               <span className="total-value">
-                ${totalPrice.toFixed(3)} <span className="currency">USDC</span>
+                ${totalPrice} <span className="currency">USDC</span>
               </span>
             </motion.div>
           </div>
